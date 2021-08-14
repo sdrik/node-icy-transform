@@ -1,10 +1,39 @@
 /* vim: set ts=2 sts=2 sw=2 et: */
 
-import { IcyTransform, IcyTransformOptions } from '../src/IcyTransform'
-import { Readable } from 'stream'
+import { IcyTransform } from '../src/IcyTransform'
+//import { IcyTransform, IcyTransformOptions } from '../src/IcyTransform'
+import { Readable, Writable } from 'stream'
+
+// helper functions
 
 function randomBuffer(size: number): Buffer {
-  return Buffer.from([...Array(size)].map(x => ~~(Math.random() * 255)))
+  return Buffer.from([...Array(size)].map(_ => ~~(Math.random() * 255)))
+}
+
+function writeByChunk(buf: Buffer, strm: Writable, chunk: number) {
+  let pos: number
+  for (pos = 0; pos < buf.length; pos += chunk)
+    strm.write(buf.slice(pos, pos + chunk))
+  strm.end()
+  return pos
+}
+
+/*
+function writeBufArray(arr: Array<Buffer>, strm: Writable) {
+  let len = 0
+  arr.forEach(buf => {
+    strm.write(buf)
+    len += buf.length
+  })
+  strm.end()
+  return len
+}
+*/
+
+function readAll(strm: Readable, buf: Buffer) {
+  let pos = 0
+  for (let b; (b = strm.read()); pos += b.length) b.copy(buf, pos)
+  return pos
 }
 
 let RANDOM_DATA: Buffer
@@ -18,9 +47,7 @@ beforeAll(() => {
 })
 
 describe('IcyTransform', () => {
-
   test('it should passthrough', () => {
-
     const transform = new IcyTransform()
 
     transform.write(Buffer.from('ABCDEF'))
@@ -31,11 +58,9 @@ describe('IcyTransform', () => {
       transform.write(RANDOM_DATA.slice(0, len))
       expect(transform.read()).toEqual(RANDOM_DATA.slice(0, len))
     }
-
   })
 
   test('it should reapeat at specified interval', () => {
-
     const transform = new IcyTransform({
       outInterval: 32,
       repeat: true,
@@ -43,10 +68,9 @@ describe('IcyTransform', () => {
     transform.metadata = 'A'
 
     const expected = new Array<Buffer>()
-    for (let i = 0; i < 1024;) {
-      expected.push(RANDOM_DATA.slice(i, i += 32))
-      if (i < 1024)
-        expected.push(METADATA1)
+    for (let i = 0; i < 1024; ) {
+      expected.push(RANDOM_DATA.slice(i, (i += 32)))
+      if (i < 1024) expected.push(METADATA1)
     }
 
     let len: number
@@ -58,7 +82,6 @@ describe('IcyTransform', () => {
   })
 
   test('it should not reapeat if not requested', () => {
-
     const transform = new IcyTransform({
       outInterval: 32,
     })
@@ -67,10 +90,9 @@ describe('IcyTransform', () => {
     const expected = new Array<Buffer>()
     expected.push(RANDOM_DATA.slice(0, 32))
     expected.push(METADATA1)
-    for (let i = 32; i < 1024;) {
-      expected.push(RANDOM_DATA.slice(i, i += 32))
-      if (i < 1024)
-        expected.push(METADATA0)
+    for (let i = 32; i < 1024; ) {
+      expected.push(RANDOM_DATA.slice(i, (i += 32)))
+      if (i < 1024) expected.push(METADATA0)
     }
 
     let len: number
@@ -82,7 +104,6 @@ describe('IcyTransform', () => {
   })
 
   test('it should remember metadata', () => {
-
     const transform = new IcyTransform({
       outInterval: 32,
     })
@@ -92,9 +113,100 @@ describe('IcyTransform', () => {
     transform.repeat = true
     transform.write(RANDOM_DATA.slice(0, 128))
     expect(transform.metadata).toBe('A')
-
   })
 
+  test('it should passthrough only when possible', () => {
+    expect(
+      new IcyTransform({ inInterval: 0, outInterval: 0, passthrough: true })
+        .passthrough
+    ).toBeFalsy()
+    expect(
+      new IcyTransform({ inInterval: 0, outInterval: 1, passthrough: true })
+        .passthrough
+    ).toBeFalsy()
+    expect(
+      new IcyTransform({ inInterval: 1, outInterval: 0, passthrough: true })
+        .passthrough
+    ).toBeFalsy()
+    expect(
+      new IcyTransform({ inInterval: 1, outInterval: 1, passthrough: true })
+        .passthrough
+    ).toBeTruthy()
+  })
+
+  test('it should be possible to enable/disable passthrough', () => {
+    let t
+    t = new IcyTransform({
+      inInterval: 1,
+      outInterval: 1,
+      passthrough: true,
+    })
+    t.passthrough = false
+    expect(t.passthrough).toBeFalsy()
+    t = new IcyTransform({
+      inInterval: 1,
+      outInterval: 1,
+      passthrough: true,
+    })
+    t.passthrough = true
+    expect(t.passthrough).toBeTruthy()
+    t = new IcyTransform({
+      inInterval: 1,
+      outInterval: 1,
+      passthrough: false,
+    })
+    t.passthrough = true
+    expect(t.passthrough).toBeTruthy()
+    t = new IcyTransform({
+      inInterval: 1,
+      outInterval: 1,
+      passthrough: false,
+    })
+    t.passthrough = false
+    expect(t.passthrough).toBeFalsy()
+  })
+
+  test('it should preserve data when both inInterval=0 and outInterval=0', () => {
+    const chunk = 1024
+    const src = randomBuffer(100 * chunk)
+    const dst = Buffer.alloc(100 * chunk)
+    const transform = new IcyTransform({ inInterval: 0, outInterval: 0 })
+
+    writeByChunk(src, transform, chunk)
+    const pos = readAll(transform, dst)
+
+    expect(pos).toBe(dst.length)
+    expect(Buffer.compare(src, dst)).toBe(0)
+  })
+
+  test('it should be observable', done => {
+    const transform = new IcyTransform({
+      inInterval: 32,
+    })
+
+    let values = Array<any>()
+    transform.metadata$().subscribe({
+      next: x => {
+        values.push(x)
+      },
+      complete: () => {
+        try {
+          expect(values.length).toBe(1024 / 32)
+          for (let value of values) expect(value).toBe("StreamTitle='A';")
+          done()
+        } catch (error) {
+          done(error)
+        }
+      },
+    })
+
+    for (let i = 0; i < 1024; ) {
+      transform.write(RANDOM_DATA.slice(i, (i += 32)))
+      transform.write(METADATA1)
+      transform.read()
+    }
+    transform.end()
+  })
 })
 
 /*
@@ -141,28 +253,6 @@ describe("str2buf", () => {
 
 })
 
-describe("constructor", () => {
-
-  test("it should passthrough only when possible", () => {
-    expect(new IcyTransform({readInterval: 0, writeInterval: 0, passthrough: true}).passthrough).toBeFalsy();
-    expect(new IcyTransform({readInterval: 0, writeInterval: 1, passthrough: true}).passthrough).toBeFalsy();
-    expect(new IcyTransform({readInterval: 1, writeInterval: 0, passthrough: true}).passthrough).toBeFalsy();
-    expect(new IcyTransform({readInterval: 1, writeInterval: 1, passthrough: true}).passthrough).toBeTruthy();
-  });
-
-  test("it should be possible to enable/disable passthrough", () => {
-    let t;
-    t = new IcyTransform({readInterval: 1, writeInterval: 1, passthrough: true}); t.passthrough = false;
-    expect(t.passthrough).toBeFalsy();
-    t = new IcyTransform({readInterval: 1, writeInterval: 1, passthrough: true}); t.passthrough = true;
-    expect(t.passthrough).toBeTruthy();
-    t = new IcyTransform({readInterval: 1, writeInterval: 1, passthrough: false}); t.passthrough = true;
-    expect(t.passthrough).toBeTruthy();
-    t = new IcyTransform({readInterval: 1, writeInterval: 1, passthrough: false}); t.passthrough = false;
-    expect(t.passthrough).toBeFalsy();
-  });
-});
-
 describe("nextMetadata / _getMetadata", () => {
 
   test("it should pass last feeded value as a metadata buffer", () => {
@@ -206,19 +296,6 @@ describe("nextMetadata / _getMetadata", () => {
 });
 
 describe("transform", () => {
-
-  test("it should preserve data when both readInterval=0 and writeInterval=0", () => {
-    const chunk = 1024;
-    const src = randomBuffer(100 * chunk);
-    const dst = Buffer.alloc(100 * chunk);
-    const transform = new IcyTransform({readInterval: 0, writeInterval: 0});
-
-    writeByChunk(src, transform, chunk);
-    const pos = readAll(transform, dst);
-
-    expect(pos).toBe(dst.length);
-    expect(Buffer.compare(src, dst)).toBe(0);
-  });
 
   describe("filter (writeInterval=0) with various chunk sizes", () => {
 

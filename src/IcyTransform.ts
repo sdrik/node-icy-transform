@@ -1,7 +1,7 @@
 /* vim: set sw=2 ts=2 sts=2 et: */
 
 import { Transform, TransformOptions } from 'stream'
-//import { NextObserver, Observable, fromEvent } from 'rxjs'
+import { NextObserver, Observable, fromEvent, takeUntil, race } from 'rxjs'
 import { IcyMetadataDecoder } from './IcyMetadataDecoder'
 
 export const ICY_DEFAULT_INTERVAL = 8192
@@ -106,13 +106,17 @@ export class IcyTransform extends Transform {
     return !!this._passthrough
   }
 
-  /*
-  public injector(): NextObserver { return { next: (x: any) => this.metadata = x } }
+  public injector(): NextObserver<any> {
+    return { next: (x: any) => (this.metadata = x) }
+  }
 
-  public metadata$(): Observable { return fromEvent(this, 'metadata') }
-  */
+  public metadata$(): Observable<unknown> {
+    return fromEvent(this, 'metadata').pipe(
+      takeUntil(race(fromEvent(this, 'finish'), fromEvent(this, 'error')))
+    )
+  }
 
-  public _transform(
+  public override _transform(
     chunk: Buffer,
     encoding: string,
     callback: (error?: any, data?: any) => void
